@@ -4,10 +4,10 @@ from fastapi import FastAPI, HTTPException
 
 app = FastAPI()
 
-# Calibrated channel markups
-BASE_P2P_MARGIN = float(os.getenv("BASE_P2P_MARGIN", "0.0360")) # 3.60% Bank Transfer baseline
-OPAY_SPREAD = float(os.getenv("OPAY_SPREAD", "0.0007"))             # +0.07% extra friction
-PALMPAY_SPREAD = float(os.getenv("PALMPAY_SPREAD", "0.0012"))       # +0.12% extra friction
+# 🔴 UPDATED REAL-WORLD CALIBRATED CHANNEL MARKUPS
+BANK_MARKUP = float(os.getenv("BANK_MARKUP", "0.0010"))       # 0.10%
+PALMPAY_SPREAD = float(os.getenv("PALMPAY_SPREAD", "0.0012")) # 0.12%
+OPAY_SPREAD = float(os.getenv("OPAY_SPREAD", "0.0024"))       # 0.24%
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -20,14 +20,12 @@ def get_market_data():
         # 1. Fetch live USDT/NGN market ticker from Quidax OpenAPI endpoint
         quidax_url = "https://openapi.quidax.io/exchange-open-api/api/v1/markets/tickers/usdtngn"
         quidax_res = requests.get(quidax_url, headers=HEADERS, timeout=7)
-        
-        if quidax_res.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Quidax returned status {quidax_res.status_code}")
-            
         quidax_json = quidax_res.json()
         
-        # Extract last traded spot price safely from Quidax response schema
-        ticker_data = quidax_json.get("data", {}).get("ticker", {})
+        market_data = quidax_json.get("data", {})
+        usdtngn_data = market_data.get("usdtngn", {})
+        ticker_data = usdtngn_data.get("ticker", {})
+        
         spot_price = float(ticker_data.get("last", ticker_data.get("sell", 0)))
         
         if spot_price <= 0:
@@ -41,10 +39,10 @@ def get_market_data():
         global_cny = float(rates.get("CNY", 7.24))
         global_sar = float(rates.get("SAR", 3.75))
 
-        # 3. Compute calibrated P2P channel execution rates
-        bank_ngn = round(spot_price * (1 + BASE_P2P_MARGIN), 2)
-        opay_ngn = round(spot_price * (1 + BASE_P2P_MARGIN + OPAY_SPREAD), 2)
-        palmpay_ngn = round(spot_price * (1 + BASE_P2P_MARGIN + PALMPAY_SPREAD), 2)
+        # 3. Compute execution rates using your newly discovered tight markups
+        bank_ngn = round(spot_price * (1 + BANK_MARKUP), 2)
+        opay_ngn = round(spot_price * (1 + OPAY_SPREAD), 2)
+        palmpay_ngn = round(spot_price * (1 + PALMPAY_SPREAD), 2)
         moniepoint_ngn = opay_ngn
 
         # 4. Modeled local OTC/corridor rates
@@ -70,4 +68,4 @@ def get_market_data():
 
 @app.get("/")
 def health_check():
-    return {"status": "Render P2P Cloud Bridge is Live"}
+    return {"status": "Render P2P Cloud Bridge is Live (Tight Spread Calibration)"}
