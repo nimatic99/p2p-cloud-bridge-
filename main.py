@@ -21,10 +21,6 @@ def get_market_data():
         # 1. Fetch live USDT/NGN market ticker from Quidax OpenAPI endpoint
         quidax_url = "https://openapi.quidax.io/exchange-open-api/api/v1/markets/tickers/usdtngn"
         quidax_res = requests.get(quidax_url, headers=HEADERS, timeout=7)
-        
-        if quidax_res.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Quidax HTTP {quidax_res.status_code}")
-
         raw_content = quidax_res.json()
         quidax_json = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
         
@@ -45,18 +41,20 @@ def get_market_data():
         global_cny = float(rates.get("CNY", 7.24))
         global_sar = float(rates.get("SAR", 3.75))
 
-        # 3. Compute execution rates using your tight markups
+        # 3. Apply calibrated 0.64% P2P premium for Dubai corridor
+        aed_p2p_premium = 0.0064
+        local_aed = round(global_aed * (1 + aed_p2p_premium), 4)
+
+        # 4. Compute execution rates using your tight markups
         bank_val = round(spot_price * (1 + BANK_MARKUP), 2)
         opay_val = round(spot_price * (1 + OPAY_SPREAD), 2)
         palm_val = round(spot_price * (1 + PALMPAY_SPREAD), 2)
         monie_val = opay_val
 
-        # 4. Modeled local OTC/corridor rates
-        local_aed = round(global_aed * 1.003, 4)
+        # Modeled secondary corridors (CNY & SAR fallback ratios)
         local_cny = round(global_cny * 1.012, 4)
         local_sar = round(global_sar * 1.004, 4)
 
-        # Keys precisely mapped to match local orchestrator requirements
         return {
             "global_ngn": spot_price,       
             "bank": bank_val,             
