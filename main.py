@@ -17,19 +17,33 @@ HEADERS = {
 @app.get("/get-market-data")
 def get_market_data():
     try:
-        # 1. Fetch live USDT/NGN ticker from Quidax OpenAPI
-        quidax_url = "https://openapi.quidax.io/exchange-open-api/api/v1/markets/tickers/usdtngn"
+        # 1. Fetch all market tickers from Quidax open API
+        quidax_url = "https://openapi.quidax.io/exchange-open-api/api/v1/markets/tickers"
         quidax_res = requests.get(quidax_url, headers=HEADERS, timeout=7)
         quidax_json = quidax_res.json()
         
-        # Extract last price safely from Quidax JSON response structure
-        ticker_data = quidax_json.get("data", {}).get("ticker", {})
-        quidax_spot = float(ticker_data.get("last", ticker_data.get("sell", 0)))
+        # 2. Iterate through the market list to find usdtngn dynamically
+        markets_data = quidax_json.get("data", [])
+        quidax_spot = 0.0
         
-        if quidax_spot == 0:
-            raise ValueError("Invalid spot rate returned from Quidax")
+        for market in markets_data:
+            # Check market name or symbol fields
+            market_name = str(market.get("market", "")).lower()
+            if "usdtngn" in market_name or market_name == "usdtngn":
+                ticker = market.get("ticker", {})
+                quidax_spot = float(ticker.get("last", ticker.get("sell", 0)))
+                break
+        
+        # Fallback search if market name key differs
+        if quidax_spot == 0.0 and isinstance(markets_data, dict):
+            usdt_dict = markets_data.get("usdtngn", {})
+            ticker = usdt_dict.get("ticker", {})
+            quidax_spot = float(ticker.get("last", ticker.get("sell", 0)))
 
-        # 2. Fetch global FX macro feeds via ExchangeRate-API
+        if quidax_spot <= 0:
+            raise ValueError(f"Could not extract usdtngn from Quidax payload: {quidax_json}")
+
+        # 3. Fetch global FX macro feeds via ExchangeRate-API
         fx_res = requests.get("https://open.er-api.com/v6/latest/USD", headers=HEADERS, timeout=7).json()
         rates = fx_res.get("rates", {})
         
@@ -37,13 +51,13 @@ def get_market_data():
         global_cny = float(rates.get("CNY", 7.24))
         global_sar = float(rates.get("SAR", 3.75))
 
-        # 3. Compute calibrated P2P channel execution rates
+        # 4. Compute calibrated P2P channel execution rates
         bank_ngn = round(quidax_spot * (1 + BASE_P2P_MARGIN), 2)
         opay_ngn = round(quidax_spot * (1 + BASE_P2P_MARGIN + OPAY_SPREAD), 2)
         palmpay_ngn = round(quidax_spot * (1 + BASE_P2P_MARGIN + PALMPAY_SPREAD), 2)
         moniepoint_ngn = opay_ngn
 
-        # 4. Modeled local OTC/corridor rates
+        # 5. Modeled local OTC/corridor rates
         local_aed = round(global_aed * 1.003, 4)
         local_cny = round(global_cny * 1.012, 4)
         local_sar = round(global_sar * 1.004, 4)
