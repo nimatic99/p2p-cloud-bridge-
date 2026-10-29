@@ -2,6 +2,7 @@ import os
 import json
 import random
 import requests
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException
 
@@ -20,11 +21,9 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# In-memory rate velocity cache
-MEMORY_CACHE = {
-    "last_spot_price": None,
-    "last_update_time": None
-}
+# In-memory rolling history buffer storing tuples of (timestamp, spot_price, bank_premium)
+# Keeps up to 60 minutes of history (assuming 60s polling interval)
+PRICE_HISTORY = deque(maxlen=60)
 
 def get_wat_time_weights():
     now_wat = datetime.now(WAT)
@@ -33,10 +32,38 @@ def get_wat_time_weights():
     
     # Night hours (10 PM - 6 AM WAT) increase illiquidity friction
     time_weight = 0.0015 if (hour < 6 or hour >= 22) else 0.0008
-    # Weekend friction weight
     weekend_weight = 0.0010 if weekday >= 5 else 0.0
     
     return time_weight, weekend_weight
+
+def calculate_rolling_velocity(current_spot, current_premium):
+    now = datetime.now(WAT)
+    PRICE_HISTORY.append((now, current_spot, current_premium))
+    
+    velocity_10m = 0.0
+    velocity_60m = 0.0
+    
+    for past_time, past_spot, past_premium in PRICE_HISTORY:
+        time_diff_min = (now - past_time).total_seconds() / 60.0
+        
+        # Snapshot closest to 10 minutes ago
+        if 9.0 <= time_diff_min <= 11.0:
+            velocity_10m = current_premium - past_premium
+            
+        # Snapshot closest to 60 minutes ago
+        if 55.0 <= time_diff_min <= 65.0:
+            velocity_60m = current_premium - past_premium
+
+    # Macro shift trigger if either 10m or 60m window experiences >= 0.7% spread shift
+    is_sustained_surge = (velocity_10m >= 0.7) or (velocity_60m >= 0.7)
+    is_sustained_crash = (velocity_10m <= -0.7) or (velocity_60m <= -0.7)
+
+    return {
+        "velocity_10m": round(velocity_10m, 2),
+        "velocity_60m": round(velocity_60m, 2),
+        "is_sustained_surge": is_sustained_surge,
+        "is_sustained_crash": is_sustained_crash
+    }
 
 @app.get("/get-market-data")
 def get_market_data():
@@ -55,45 +82,14 @@ def get_market_data():
         if spot_price <= 0:
             raise ValueError(f"Invalid spot rate: {quidax_json}")
 
-        # 2. Compute 60-Second Spot Velocity (Surge & Crash Engine)
-        velocity_pct = 0.0
-        is_surge = False
-        is_crash = False
-        
-        if MEMORY_CACHE["last_spot_price"] is not None:
-            prev_spot = MEMORY_CACHE["last_spot_price"]
-            velocity_pct = ((spot_price - prev_spot) / prev_spot) * 100
-            
-            if velocity_pct >= 0.5:
-                is_surge = True
-            elif velocity_pct <= -0.5:
-                is_crash = True
-                
-        # Update cache
-        MEMORY_CACHE["last_spot_price"] = spot_price
-        MEMORY_CACHE["last_update_time"] = datetime.now(WAT)
-
-        # 3. Calculate WAT Cyclical Weights & Shared Pulse
+        # 2. Calculate WAT Cyclical Weights & Shared Pulse
         time_weight, weekend_weight = get_wat_time_weights()
         shared_market_pulse = random.gauss(0, 0.0004)
 
-        # 4. Bidirectional Velocity Impact (Handling both Surges and Crashes)
-        if is_surge:
-            # Upside momentum: merchants scramble to reprice upward
-            velocity_impact = (velocity_pct * 0.002)
-        elif is_crash:
-            # Downside crash: merchants lag and hold high sell ads, widening the apparent premium gap
-            velocity_impact = (abs(velocity_pct) * 0.0035)
-        else:
-            velocity_impact = 0.0
-
-        # --- DYNAMIC CHANNEL MARKUPS ---
-        # Bank Wire Markup with full velocity integration
-        bank_markup = BANK_MARKUP + time_weight + weekend_weight + velocity_impact + shared_market_pulse + random.gauss(0.0003, 0.0002)
-        
-        # Neobank Markups (Independent noise simulates payment rail demand shifts)
-        opay_markup = OPAY_SPREAD + time_weight + weekend_weight + velocity_impact + shared_market_pulse + random.gauss(0.0006, 0.0003)
-        palm_markup = PALMPAY_SPREAD + time_weight + weekend_weight + velocity_impact + shared_market_pulse + random.gauss(0.0004, 0.0002)
+        # 3. Dynamic Channel Markups
+        bank_markup = BANK_MARKUP + time_weight + weekend_weight + shared_market_pulse + random.gauss(0.0003, 0.0002)
+        opay_markup = OPAY_SPREAD + time_weight + weekend_weight + shared_market_pulse + random.gauss(0.0006, 0.0003)
+        palm_markup = PALMPAY_SPREAD + time_weight + weekend_weight + shared_market_pulse + random.gauss(0.0004, 0.0002)
         monie_markup = opay_markup + random.gauss(0.0001, 0.0002)
 
         bank_val = round(spot_price * (1 + max(0.0002, bank_markup)), 2)
@@ -101,7 +97,11 @@ def get_market_data():
         palm_val = round(spot_price * (1 + max(0.0002, palm_markup)), 2)
         monie_val = round(spot_price * (1 + max(0.0002, monie_markup)), 2)
 
-        # 5. Global Macro Rates & Foreign Corridor Modeling
+        # Compute Base P2P Premium percentage for rolling velocity checks
+        base_p2p_premium = ((bank_val - spot_price) / spot_price) * 100
+        rolling_metrics = calculate_rolling_velocity(spot_price, base_p2p_premium)
+
+        # 4. Global Macro Rates & Foreign Corridor Modeling
         fx_res = requests.get("https://open.er-api.com/v6/latest/USD", headers=HEADERS, timeout=7).json()
         rates = fx_res.get("rates", {})
         
@@ -109,7 +109,6 @@ def get_market_data():
         global_cny = float(rates.get("CNY", 7.24))
         global_sar = float(rates.get("SAR", 3.75))
 
-        # Dynamic Foreign Corridor Premiums (0.64% AED Bybit baseline + stochastic noise)
         local_aed = round(global_aed * (1 + 0.0064 + random.gauss(0, 0.0002)), 4)
         local_cny = round(global_cny * (1 + 0.0120 + random.gauss(0, 0.0003)), 4)
         local_sar = round(global_sar * (1 + 0.0040 + random.gauss(0, 0.0002)), 4)
@@ -126,11 +125,7 @@ def get_market_data():
             "local_cny": local_cny,
             "global_sar": global_sar,
             "local_sar": local_sar,
-            "meta": {
-                "velocity_pct": round(velocity_pct, 2),
-                "is_surge": is_surge,
-                "is_crash": is_crash
-            }
+            "meta": rolling_metrics
         }
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Market data aggregation error: {str(e)}")
