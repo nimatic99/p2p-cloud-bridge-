@@ -27,23 +27,16 @@ BTC_PRICE_HISTORY = deque(maxlen=15)
 def fetch_macro_spot_baseline():
     """Fetches macro spot baseline using Kraken USDT/USD & Open FX USD/NGN, calibrated with a 1.9% parallel market factor."""
     try:
-        # 1. Fetch live USD/NGN rate from open forex api
         fx_res = requests.get("https://open.er-api.com/v6/latest/USD", headers=HEADERS, timeout=6).json()
         raw_usd_ngn = float(fx_res.get("rates", {}).get("NGN", 1550.0))
-        
-        # Apply structural parallel-market / P2P liquidity friction buffer (+1.9%) 
-        # to align official forex feed with real-world street/P2P clearing rates.
         parallel_adjusted_usd_ngn = raw_usd_ngn * 1.019
 
-        # 2. Fetch live USDT price in USD from Kraken public API
         kraken_res = requests.get("https://api.kraken.com/0/public/Ticker?pair=USDTZUSD", headers=HEADERS, timeout=6).json()
         result_data = kraken_res.get("result", {})
         usdt_usd = float(result_data.get("USDTZUSD", {}).get("c", [1.0])[0])
 
-        # 3. Compute true parallel-market-aligned macro spot baseline NGN per USDT
         macro_spot = usdt_usd * parallel_adjusted_usd_ngn
 
-        # 4. Fetch BTC USD price for volatility tracker from Kraken
         btc_res = requests.get("https://api.kraken.com/0/public/Ticker?pair=XBTUSD", headers=HEADERS, timeout=6).json()
         btc_usd = float(btc_res.get("result", {}).get("XXBTZUSD", {}).get("c", [0.0])[0])
 
@@ -76,11 +69,8 @@ def get_wat_time_weights():
     weekday = now_wat.weekday()
     time_weight = 0.0015 if (hour < 6 or hour >= 22) else 0.0008
     weekend_weight = 0.0010 if weekday >= 5 else 0.0
-    
-    # Automatic Salary Window Booster (27th to 5th adds +0.17% demand buffer)
     day = now_wat.day
     salary_weight = 0.0017 if (day >= 27 or day <= 5) else 0.0
-    
     return time_weight, weekend_weight, salary_weight
 
 def calculate_btc_volatility(current_btc_price):
@@ -101,7 +91,6 @@ def calculate_rolling_velocity(current_macro_spot, current_local_rate, current_p
     spot_delta_30m = 0.0
     p2p_delta_30m = 0.0
 
-    # WARM-UP GUARD: Suppress artificial cold-start spikes until buffer is mature (>= 15 mins)
     if len(PRICE_HISTORY) >= 15:
         oldest_time, oldest_macro, oldest_local, oldest_premium = PRICE_HISTORY[0]
         time_span_min = (now - oldest_time).total_seconds() / 60.0
@@ -158,4 +147,49 @@ def get_market_data():
 
         bank_markup = BANK_MARKUP + time_weight + weekend_weight + shared_market_pulse + random.gauss(0.0003, 0.0002)
         opay_markup = OPAY_SPREAD + time_weight + weekend_weight + salary_weight + btc_shock_buffer + shared_market_pulse + random.gauss(0.0006, 0.0003)
-        palm_markup = PALMPAY_SPREAD + time_weight + weekend_weight + salary_weight + btc_shock_buffer + shared_market_pulse + random.gauss(0.0004, 0.0002
+        palm_markup = PALMPAY_SPREAD + time_weight + weekend_weight + salary_weight + btc_shock_buffer + shared_market_pulse + random.gauss(0.0004, 0.0002)
+        monie_markup = opay_markup + random.gauss(0.0001, 0.0002)
+
+        bank_val = round(macro_spot_baseline * (1 + max(0.0002, bank_markup)), 2)
+        opay_val = round(macro_spot_baseline * (1 + max(0.0002, opay_markup)), 2)
+        palm_val = round(macro_spot_baseline * (1 + max(0.0002, palm_markup)), 2)
+        monie_val = round(macro_spot_baseline * (1 + max(0.0002, monie_markup)), 2)
+
+        blended_market_val = (bank_val + opay_val + palm_val + monie_val) / 4.0
+        base_p2p_premium = ((blended_market_val - macro_spot_baseline) / macro_spot_baseline) * 100
+
+        rolling_metrics = calculate_rolling_velocity(macro_spot_baseline, current_local_rate, base_p2p_premium)
+        rolling_metrics["btc_delta_15m"] = btc_delta_15m
+        rolling_metrics["is_btc_shock"] = is_btc_shock
+
+        fx_res = requests.get("https://open.er-api.com/v6/latest/USD", headers=HEADERS, timeout=7).json()
+        rates = fx_res.get("rates", {})
+        global_aed = float(rates.get("AED", 3.6725))
+        global_cny = float(rates.get("CNY", 7.24))
+        global_sar = float(rates.get("SAR", 3.75))
+
+        local_aed = round(global_aed * (1 + 0.0064 + random.gauss(0, 0.0002)), 4)
+        local_cny = round(global_cny * (1 + 0.0120 + random.gauss(0, 0.0003)), 4)
+        local_sar = round(global_sar * (1 + 0.0040 + random.gauss(0, 0.0002)), 4)
+
+        return {
+            "macro_spot_baseline": macro_spot_baseline,
+            "current_local_rate": current_local_rate,
+            "bank": bank_val,
+            "opay": opay_val,
+            "palm": palm_val,
+            "monie": monie_val,
+            "global_aed": global_aed,
+            "local_aed": local_aed,
+            "global_cny": global_cny,
+            "local_cny": local_cny,
+            "global_sar": global_sar,
+            "local_sar": local_sar,
+            "meta": rolling_metrics
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Market data aggregation error: {str(e)}")
+
+@app.get("/health")
+def health_check():
+    return {"status": "awake", "engine": "operational-syntax-fixed"}
