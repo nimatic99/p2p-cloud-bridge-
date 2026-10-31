@@ -120,4 +120,78 @@ def calculate_rolling_velocity(current_macro_spot, current_local_rate, current_p
     return {
         "velocity_10m": round(velocity_10m, 2),
         "velocity_60m": round(velocity_60m, 2),
-        "spot_delta_30m": rou
+        "spot_delta_30m": round(spot_delta_30m, 2),
+        "p2p_delta_30m": round(p2p_delta_30m, 2),
+        "is_sustained_surge": is_sustained_surge,
+        "is_sustained_crash": is_sustained_crash,
+        "is_global_spot_lag": is_global_spot_lag,
+        "is_local_liquidity_shock": is_local_liquidity_shock
+    }
+
+@app.get("/get-market-data")
+def get_market_data():
+    try:
+        macro_spot_baseline, btc_usd = fetch_coingecko_market_data()
+        current_local_rate = fetch_current_local_rate()
+
+        if macro_spot_baseline <= 0:
+            macro_spot_baseline = current_local_rate if current_local_rate else 0.0
+
+        if macro_spot_baseline <= 0:
+            raise ValueError("Failed to fetch valid macro spot baseline rates.")
+
+        if not current_local_rate:
+            current_local_rate = macro_spot_baseline
+
+        time_weight, weekend_weight, salary_weight = get_wat_time_weights()
+        btc_delta_15m, is_btc_shock = calculate_btc_volatility(btc_usd)
+        
+        btc_shock_buffer = 0.0025 if is_btc_shock else 0.0
+        shared_market_pulse = random.gauss(0, 0.0004)
+
+        bank_markup = BANK_MARKUP + time_weight + weekend_weight + shared_market_pulse + random.gauss(0.0003, 0.0002)
+        opay_markup = OPAY_SPREAD + time_weight + weekend_weight + salary_weight + btc_shock_buffer + shared_market_pulse + random.gauss(0.0006, 0.0003)
+        palm_markup = PALMPAY_SPREAD + time_weight + weekend_weight + salary_weight + btc_shock_buffer + shared_market_pulse + random.gauss(0.0004, 0.0002)
+        monie_markup = opay_markup + random.gauss(0.0001, 0.0002)
+
+        bank_val = round(macro_spot_baseline * (1 + max(0.0002, bank_markup)), 2)
+        opay_val = round(macro_spot_baseline * (1 + max(0.0002, opay_markup)), 2)
+        palm_val = round(macro_spot_baseline * (1 + max(0.0002, palm_markup)), 2)
+        monie_val = round(macro_spot_baseline * (1 + max(0.0002, monie_markup)), 2)
+
+        base_p2p_premium = ((bank_val - macro_spot_baseline) / macro_spot_baseline) * 100
+        rolling_metrics = calculate_rolling_velocity(macro_spot_baseline, current_local_rate, base_p2p_premium)
+        rolling_metrics["btc_delta_15m"] = btc_delta_15m
+        rolling_metrics["is_btc_shock"] = is_btc_shock
+
+        fx_res = requests.get("https://open.er-api.com/v6/latest/USD", headers=HEADERS, timeout=7).json()
+        rates = fx_res.get("rates", {})
+        global_aed = float(rates.get("AED", 3.6725))
+        global_cny = float(rates.get("CNY", 7.24))
+        global_sar = float(rates.get("SAR", 3.75))
+
+        local_aed = round(global_aed * (1 + 0.0064 + random.gauss(0, 0.0002)), 4)
+        local_cny = round(global_cny * (1 + 0.0120 + random.gauss(0, 0.0003)), 4)
+        local_sar = round(global_sar * (1 + 0.0040 + random.gauss(0, 0.0002)), 4)
+
+        return {
+            "macro_spot_baseline": macro_spot_baseline,
+            "current_local_rate": current_local_rate,
+            "bank": bank_val,
+            "opay": opay_val,
+            "palm": palm_val,
+            "monie": monie_val,
+            "global_aed": global_aed,
+            "local_aed": local_aed,
+            "global_cny": global_cny,
+            "local_cny": local_cny,
+            "global_sar": global_sar,
+            "local_sar": local_sar,
+            "meta": rolling_metrics
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Market data aggregation error: {str(e)}")
+
+@app.get("/health")
+def health_check():
+    return {"status": "awake", "engine": "operational-fully-balanced"}
