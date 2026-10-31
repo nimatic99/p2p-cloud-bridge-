@@ -25,25 +25,29 @@ PRICE_HISTORY = deque(maxlen=60)
 BTC_PRICE_HISTORY = deque(maxlen=15)
 
 def fetch_macro_spot_baseline():
-    """Fetches robust un-rate-limited macro spot baseline using Kraken USDT/USD & Open FX USD/NGN rates."""
+    """Fetches macro spot baseline using Kraken USDT/USD & Open FX USD/NGN, adjusted for real parallel market premium (~2.5%)."""
     try:
         # 1. Fetch live USD/NGN rate from open forex api
         fx_res = requests.get("https://open.er-api.com/v6/latest/USD", headers=HEADERS, timeout=6).json()
-        usd_ngn = float(fx_res.get("rates", {}).get("NGN", 1550.0))
+        raw_usd_ngn = float(fx_res.get("rates", {}).get("NGN", 1550.0))
+        
+        # Apply structural parallel-market / P2P liquidity friction buffer (+2.5%) 
+        # to account for CBN official rate vs street/P2P real-world clearing spreads.
+        parallel_adjusted_usd_ngn = raw_usd_ngn * 1.025
 
         # 2. Fetch live USDT price in USD from Kraken public API
         kraken_res = requests.get("https://api.kraken.com/0/public/Ticker?pair=USDTZUSD", headers=HEADERS, timeout=6).json()
         result_data = kraken_res.get("result", {})
         usdt_usd = float(result_data.get("USDTZUSD", {}).get("c", [1.0])[0])
 
-        # 3. Compute true macro spot baseline NGN per USDT
-        macro_spot = usdt_usd * usd_ngn
+        # 3. Compute true parallel-market-aligned macro spot baseline NGN per USDT
+        macro_spot = usdt_usd * parallel_adjusted_usd_ngn
 
         # 4. Fetch BTC USD price for volatility tracker from Kraken
         btc_res = requests.get("https://api.kraken.com/0/public/Ticker?pair=XBTUSD", headers=HEADERS, timeout=6).json()
         btc_usd = float(btc_res.get("result", {}).get("XXBTZUSD", {}).get("c", [0.0])[0])
 
-        print(f"✅ Macro Baseline Fetched -> USDT/USD: {usdt_usd}, USD/NGN: {usd_ngn}, Macro Spot NGN: {macro_spot}, BTC USD: {btc_usd}")
+        print(f"✅ Macro Baseline Fetched -> USDT/USD: {usdt_usd}, Adjusted USD/NGN: {parallel_adjusted_usd_ngn:.2f}, Macro Spot NGN: {macro_spot:.2f}, BTC USD: {btc_usd}")
         return macro_spot, btc_usd
     except Exception as err:
         print(f"❌ Macro Baseline Exception Error: {err}")
@@ -162,39 +166,15 @@ def get_market_data():
         palm_val = round(macro_spot_baseline * (1 + max(0.0002, palm_markup)), 2)
         monie_val = round(macro_spot_baseline * (1 + max(0.0002, monie_markup)), 2)
 
-        base_p2p_premium = ((bank_val - macro_spot_baseline) / macro_spot_baseline) * 100
+        # Blended channel average/median market value across all active payment rails
+        blended_market_val = (bank_val + opay_val + palm_val + monie_val) / 4.0
+
+        # Base P2P Premium representing the true blended market midpoint
+        base_p2p_premium = ((blended_market_val - macro_spot_baseline) / macro_spot_baseline) * 100
+
         rolling_metrics = calculate_rolling_velocity(macro_spot_baseline, current_local_rate, base_p2p_premium)
         rolling_metrics["btc_delta_15m"] = btc_delta_15m
         rolling_metrics["is_btc_shock"] = is_btc_shock
 
         fx_res = requests.get("https://open.er-api.com/v6/latest/USD", headers=HEADERS, timeout=7).json()
-        rates = fx_res.get("rates", {})
-        global_aed = float(rates.get("AED", 3.6725))
-        global_cny = float(rates.get("CNY", 7.24))
-        global_sar = float(rates.get("SAR", 3.75))
-
-        local_aed = round(global_aed * (1 + 0.0064 + random.gauss(0, 0.0002)), 4)
-        local_cny = round(global_cny * (1 + 0.0120 + random.gauss(0, 0.0003)), 4)
-        local_sar = round(global_sar * (1 + 0.0040 + random.gauss(0, 0.0002)), 4)
-
-        return {
-            "macro_spot_baseline": macro_spot_baseline,
-            "current_local_rate": current_local_rate,
-            "bank": bank_val,
-            "opay": opay_val,
-            "palm": palm_val,
-            "monie": monie_val,
-            "global_aed": global_aed,
-            "local_aed": local_aed,
-            "global_cny": global_cny,
-            "local_cny": local_cny,
-            "global_sar": global_sar,
-            "local_sar": local_sar,
-            "meta": rolling_metrics
-        }
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Market data aggregation error: {str(e)}")
-
-@app.get("/health")
-def health_check():
-    return {"status": "awake", "engine": "operational-kraken-fx"}
+        ra
