@@ -25,15 +25,15 @@ PRICE_HISTORY = deque(maxlen=60)
 BTC_PRICE_HISTORY = deque(maxlen=15)
 
 def fetch_macro_spot_baseline():
-    """Fetches macro spot baseline using Kraken USDT/USD & Open FX USD/NGN, adjusted for real parallel market premium (~2.5%)."""
+    """Fetches macro spot baseline using Kraken USDT/USD & Open FX USD/NGN, calibrated with a 1.9% parallel market factor."""
     try:
         # 1. Fetch live USD/NGN rate from open forex api
         fx_res = requests.get("https://open.er-api.com/v6/latest/USD", headers=HEADERS, timeout=6).json()
         raw_usd_ngn = float(fx_res.get("rates", {}).get("NGN", 1550.0))
         
-        # Apply structural parallel-market / P2P liquidity friction buffer (+2.5%) 
-        # to account for CBN official rate vs street/P2P real-world clearing spreads.
-        parallel_adjusted_usd_ngn = raw_usd_ngn * 1.025
+        # Apply structural parallel-market / P2P liquidity friction buffer (+1.9%) 
+        # to align official forex feed with real-world street/P2P clearing rates.
+        parallel_adjusted_usd_ngn = raw_usd_ngn * 1.019
 
         # 2. Fetch live USDT price in USD from Kraken public API
         kraken_res = requests.get("https://api.kraken.com/0/public/Ticker?pair=USDTZUSD", headers=HEADERS, timeout=6).json()
@@ -158,23 +158,4 @@ def get_market_data():
 
         bank_markup = BANK_MARKUP + time_weight + weekend_weight + shared_market_pulse + random.gauss(0.0003, 0.0002)
         opay_markup = OPAY_SPREAD + time_weight + weekend_weight + salary_weight + btc_shock_buffer + shared_market_pulse + random.gauss(0.0006, 0.0003)
-        palm_markup = PALMPAY_SPREAD + time_weight + weekend_weight + salary_weight + btc_shock_buffer + shared_market_pulse + random.gauss(0.0004, 0.0002)
-        monie_markup = opay_markup + random.gauss(0.0001, 0.0002)
-
-        bank_val = round(macro_spot_baseline * (1 + max(0.0002, bank_markup)), 2)
-        opay_val = round(macro_spot_baseline * (1 + max(0.0002, opay_markup)), 2)
-        palm_val = round(macro_spot_baseline * (1 + max(0.0002, palm_markup)), 2)
-        monie_val = round(macro_spot_baseline * (1 + max(0.0002, monie_markup)), 2)
-
-        # Blended channel average/median market value across all active payment rails
-        blended_market_val = (bank_val + opay_val + palm_val + monie_val) / 4.0
-
-        # Base P2P Premium representing the true blended market midpoint
-        base_p2p_premium = ((blended_market_val - macro_spot_baseline) / macro_spot_baseline) * 100
-
-        rolling_metrics = calculate_rolling_velocity(macro_spot_baseline, current_local_rate, base_p2p_premium)
-        rolling_metrics["btc_delta_15m"] = btc_delta_15m
-        rolling_metrics["is_btc_shock"] = is_btc_shock
-
-        fx_res = requests.get("https://open.er-api.com/v6/latest/USD", headers=HEADERS, timeout=7).json()
-        ra
+        palm_markup = PALMPAY_SPREAD + time_weight + weekend_weight + salary_weight + btc_shock_buffer + shared_market_pulse + random.gauss(0.0004, 0.0002
