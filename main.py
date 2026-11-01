@@ -11,10 +11,10 @@ app = FastAPI()
 # --- WEST AFRICA TIMEZONE (WAT = UTC + 1) ---
 WAT = timezone(timedelta(hours=1))
 
-# Default base spread configurations
-BANK_MARKUP = float(os.getenv("BANK_MARKUP", "0.0010"))
-PALMPAY_SPREAD = float(os.getenv("PALMPAY_SPREAD", "0.0012"))
-OPAY_SPREAD = float(os.getenv("OPAY_SPREAD", "0.0024"))
+# Sweet-spot calibrated base spread configurations
+BANK_MARKUP = float(os.getenv("BANK_MARKUP", "0.0022"))
+PALMPAY_SPREAD = float(os.getenv("PALMPAY_SPREAD", "0.0030"))
+OPAY_SPREAD = float(os.getenv("OPAY_SPREAD", "0.0038"))
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -29,6 +29,8 @@ def fetch_macro_spot_baseline():
     try:
         fx_res = requests.get("https://open.er-api.com/v6/latest/USD", headers=HEADERS, timeout=6).json()
         raw_usd_ngn = float(fx_res.get("rates", {}).get("NGN", 1550.0))
+        
+        # Apply structural parallel-market / P2P liquidity friction buffer (+1.9%)
         parallel_adjusted_usd_ngn = raw_usd_ngn * 1.019
 
         kraken_res = requests.get("https://api.kraken.com/0/public/Ticker?pair=USDTZUSD", headers=HEADERS, timeout=6).json()
@@ -40,7 +42,6 @@ def fetch_macro_spot_baseline():
         btc_res = requests.get("https://api.kraken.com/0/public/Ticker?pair=XBTUSD", headers=HEADERS, timeout=6).json()
         btc_usd = float(btc_res.get("result", {}).get("XXBTZUSD", {}).get("c", [0.0])[0])
 
-        print(f"✅ Macro Baseline Fetched -> USDT/USD: {usdt_usd}, Adjusted USD/NGN: {parallel_adjusted_usd_ngn:.2f}, Macro Spot NGN: {macro_spot:.2f}, BTC USD: {btc_usd}")
         return macro_spot, btc_usd
     except Exception as err:
         print(f"❌ Macro Baseline Exception Error: {err}")
@@ -69,8 +70,10 @@ def get_wat_time_weights():
     weekday = now_wat.weekday()
     time_weight = 0.0015 if (hour < 6 or hour >= 22) else 0.0008
     weekend_weight = 0.0010 if weekday >= 5 else 0.0
+    
     day = now_wat.day
     salary_weight = 0.0017 if (day >= 27 or day <= 5) else 0.0
+    
     return time_weight, weekend_weight, salary_weight
 
 def calculate_btc_volatility(current_btc_price):
@@ -96,7 +99,8 @@ def calculate_rolling_velocity(current_macro_spot, current_local_rate, current_p
         time_span_min = (now - oldest_time).total_seconds() / 60.0
         if time_span_min >= 12.0:
             spot_delta_30m = ((current_macro_spot - oldest_macro) / oldest_macro) * 100
-            p2p_delta_30m = ((current_premium - oldest_premium) / (oldest_premium if oldest_premium != 0 else 1)) * 100
+            # Absolute point difference calculation to eliminate false noise on small percentages
+            p2p_delta_30m = current_premium - oldest_premium
 
     for past_time, past_macro, past_local, past_premium in PRICE_HISTORY:
         time_diff_min = (now - past_time).total_seconds() / 60.0
@@ -111,10 +115,10 @@ def calculate_rolling_velocity(current_macro_spot, current_local_rate, current_p
     is_local_liquidity_shock = False
 
     if len(PRICE_HISTORY) >= 15:
-        is_sustained_surge = (velocity_10m >= 0.7) or (velocity_60m >= 0.7) or (p2p_delta_30m >= 0.35)
-        is_sustained_crash = (velocity_10m <= -0.7) or (velocity_60m <= -0.7) or (p2p_delta_30m <= -0.35)
-        is_global_spot_lag = (abs(spot_delta_30m) >= 0.4) and (abs(p2p_delta_30m) < 0.2)
-        is_local_liquidity_shock = (abs(spot_delta_30m) < 0.2) and (abs(p2p_delta_30m) >= 0.4)
+        is_sustained_surge = (velocity_10m >= 0.7) or (velocity_60m >= 0.7) or (p2p_delta_30m >= 0.45)
+        is_sustained_crash = (velocity_10m <= -0.7) or (velocity_60m <= -0.7) or (p2p_delta_30m <= -0.45)
+        is_global_spot_lag = (abs(spot_delta_30m) >= 0.5) and (abs(p2p_delta_30m) < 0.15)
+        is_local_liquidity_shock = (abs(spot_delta_30m) < 0.2) and (abs(p2p_delta_30m) >= 0.45)
 
     return {
         "velocity_10m": round(velocity_10m, 2),
@@ -192,4 +196,4 @@ def get_market_data():
 
 @app.get("/health")
 def health_check():
-    return {"status": "awake", "engine": "operational-syntax-fixed"}
+    return {"status": "awake", "engine": "operational-noise-free"}
