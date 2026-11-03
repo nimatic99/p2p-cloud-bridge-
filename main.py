@@ -11,10 +11,10 @@ app = FastAPI()
 # --- WEST AFRICA TIMEZONE (WAT = UTC + 1) ---
 WAT = timezone(timedelta(hours=1))
 
-# Sweet-spot calibrated base spread configurations
-BANK_MARKUP = float(os.getenv("BANK_MARKUP", "0.0022"))
-PALMPAY_SPREAD = float(os.getenv("PALMPAY_SPREAD", "0.0030"))
-OPAY_SPREAD = float(os.getenv("OPAY_SPREAD", "0.0038"))
+# Local-Rate Calibrated Base Spread Configurations
+BANK_MARKUP = float(os.getenv("BANK_MARKUP", "0.0010"))       # Standard local bank spread (+0.1%)
+PALMPAY_SPREAD = float(os.getenv("PALMPAY_SPREAD", "0.0020")) # PalmPay base (+0.2%)
+OPAY_SPREAD = float(os.getenv("OPAY_SPREAD", "0.0020"))       # OPay base (+0.2%)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -25,12 +25,10 @@ PRICE_HISTORY = deque(maxlen=60)
 BTC_PRICE_HISTORY = deque(maxlen=15)
 
 def fetch_macro_spot_baseline():
-    """Fetches macro spot baseline using Kraken USDT/USD & Open FX USD/NGN, calibrated with a 1.9% parallel market factor."""
+    """Fetches macro spot baseline using Kraken USDT/USD & Open FX USD/NGN with 1.9% parallel factor."""
     try:
         fx_res = requests.get("https://open.er-api.com/v6/latest/USD", headers=HEADERS, timeout=6).json()
         raw_usd_ngn = float(fx_res.get("rates", {}).get("NGN", 1550.0))
-        
-        # Apply structural parallel-market / P2P liquidity friction buffer (+1.9%)
         parallel_adjusted_usd_ngn = raw_usd_ngn * 1.019
 
         kraken_res = requests.get("https://api.kraken.com/0/public/Ticker?pair=USDTZUSD", headers=HEADERS, timeout=6).json()
@@ -71,6 +69,7 @@ def get_wat_time_weights():
     time_weight = 0.0015 if (hour < 6 or hour >= 22) else 0.0008
     weekend_weight = 0.0010 if weekday >= 5 else 0.0
     
+    # Automatic Salary Window Booster (27th to 5th adds +0.17% demand buffer)
     day = now_wat.day
     salary_weight = 0.0017 if (day >= 27 or day <= 5) else 0.0
     
@@ -99,7 +98,6 @@ def calculate_rolling_velocity(current_macro_spot, current_local_rate, current_p
         time_span_min = (now - oldest_time).total_seconds() / 60.0
         if time_span_min >= 12.0:
             spot_delta_30m = ((current_macro_spot - oldest_macro) / oldest_macro) * 100
-            # Absolute point difference calculation to eliminate false noise on small percentages
             p2p_delta_30m = current_premium - oldest_premium
 
     for past_time, past_macro, past_local, past_premium in PRICE_HISTORY:
@@ -149,15 +147,17 @@ def get_market_data():
         btc_shock_buffer = 0.0025 if is_btc_shock else 0.0
         shared_market_pulse = random.gauss(0, 0.0004)
 
+        # Dynamic adjustments applying time, weekend, salary, and BTC shock buffers
         bank_markup = BANK_MARKUP + time_weight + weekend_weight + shared_market_pulse + random.gauss(0.0003, 0.0002)
         opay_markup = OPAY_SPREAD + time_weight + weekend_weight + salary_weight + btc_shock_buffer + shared_market_pulse + random.gauss(0.0006, 0.0003)
         palm_markup = PALMPAY_SPREAD + time_weight + weekend_weight + salary_weight + btc_shock_buffer + shared_market_pulse + random.gauss(0.0004, 0.0002)
         monie_markup = opay_markup + random.gauss(0.0001, 0.0002)
 
-        bank_val = round(macro_spot_baseline * (1 + max(0.0002, bank_markup)), 2)
-        opay_val = round(macro_spot_baseline * (1 + max(0.0002, opay_markup)), 2)
-        palm_val = round(macro_spot_baseline * (1 + max(0.0002, palm_markup)), 2)
-        monie_val = round(macro_spot_baseline * (1 + max(0.0002, monie_markup)), 2)
+        # ANCHOR CHANGE: Channel values calculated directly off Current Local Rate
+        bank_val = round(current_local_rate * (1 + max(0.0002, bank_markup)), 2)
+        opay_val = round(current_local_rate * (1 + max(0.0002, opay_markup)), 2)
+        palm_val = round(current_local_rate * (1 + max(0.0002, palm_markup)), 2)
+        monie_val = round(current_local_rate * (1 + max(0.0002, monie_markup)), 2)
 
         blended_market_val = (bank_val + opay_val + palm_val + monie_val) / 4.0
         base_p2p_premium = ((blended_market_val - macro_spot_baseline) / macro_spot_baseline) * 100
@@ -196,4 +196,4 @@ def get_market_data():
 
 @app.get("/health")
 def health_check():
-    return {"status": "awake", "engine": "operational-noise-free"}
+    return {"status": "awake", "engine": "operational-local-anchored"}
