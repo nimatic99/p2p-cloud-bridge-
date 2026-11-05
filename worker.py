@@ -1,5 +1,6 @@
 import csv
 import json
+import os
 import queue
 import sqlite3
 import threading
@@ -10,16 +11,16 @@ from datetime import datetime, timedelta
 from curl_cffi import requests as c_requests
 
 # ==========================================
-# 🛑 ENTERPRISE CONFIGURATION AREA
+# 🛑 ENTERPRISE CONFIGURATION AREA (SECURE)
 # ==========================================
-TELEGRAM_BOT_TOKEN = "8878950927:AAGPChR866iii8us_MGQ9RngzJYa32yJYBg"
-VIP_MEMBER_GROUP_ID = "-1004343394067"  # Unified VIP Client Group (Tier 1 & Tier 2 Merged)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8878950927:AAGPChR866iii8us_MGQ9RngzJYa32yJYBg")
+VIP_MEMBER_GROUP_ID = os.getenv("VIP_MEMBER_GROUP_ID", "-1004343394067")  # Unified VIP Client Group
 TIER_1_CHAT_ID = VIP_MEMBER_GROUP_ID
 TIER_2_CHAT_ID = VIP_MEMBER_GROUP_ID
-TIER_3_CHAT_ID = "-1004406022772"  # Elite Corridors
+TIER_3_CHAT_ID = os.getenv("TIER_3_CHAT_ID", "-1004406022772")  # Elite Corridors
 DB_FILE = "enterprise_p2p.db"
 
-CLOUD_BRIDGE_URL = "https://nimatic-currency-scanner.onrender.com/get-market-data"
+CLOUD_BRIDGE_URL = os.getenv("CLOUD_BRIDGE_URL", "https://nimatic-currency-scanner.onrender.com/get-market-data")
 
 db_queue = queue.Queue()
 LAST_ALERT_TIME = {"tier1": 0, "tier2_session": 0, "btc_shock": 0, "tier3": {}}
@@ -159,7 +160,7 @@ def send_alert(chat_id, text):
         pass
 
 def main():
-    print("🚀 Cloud Background Worker Active (3-Hour Cadence & -0.1% Buy-Side Markup)...")
+    print("🚀 Cloud Background Worker Active (Secure Env Vars, 3-Hour Cadence & -0.1% Buy-Side)...")
     
     session_premium_buffer = deque(maxlen=240)
 
@@ -194,7 +195,7 @@ def main():
 
             session_premium_buffer.append(base_p2p_premium)
 
-            print(f"📊 Cloud Cycle: Macro Spot Baseline: {macro_spot_baseline:,.2f} | Local Rate: {current_local_rate:,.2f} | Premium: {base_p2p_premium:.2f}% | 30m P2P Delta: {p2p_delta_30m:+.2f}pts")
+            print(f"📊 Cloud Cycle: Macro Spot: {macro_spot_baseline:,.2f} | Local Rate: {current_local_rate:,.2f} | Premium: {base_p2p_premium:.2f}% | 30m Delta: {p2p_delta_30m:+.2f}pts")
 
             # --- TIER 1: BTC VOLATILITY SHOCK RADAR ---
             if is_btc_shock and (current_time - LAST_ALERT_TIME["btc_shock"] > 1800):
